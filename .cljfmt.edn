@@ -1,0 +1,14 @@
+{:remove-surrounding-whitespace?        true
+ :remove-trailing-whitespace?           true
+ :remove-consecutive-blank-lines?       true
+ :remove-multiple-non-indenting-spaces? true
+;  :insert-missing-whitespace?            true
+;  :align-associative?                    true
+;  :indents                               ^:replace {#"^\w" [[:block 1] [:inner 2 0]]}
+ :test-code                             (concat [2]
+                                                (map #(inc (* % 2))
+                                                     (filter #(aget sieved %)
+                                                             (range 1 hn)))
+                                                (foo bar
+                                                     baz
+                                                     bang))}
