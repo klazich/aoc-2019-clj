@@ -5,7 +5,7 @@
             [clojure.core.async
              :as a
              :refer [>! <! >!! <!! go chan buffer close! thread
-                     alts! alts!! take! put! timeout]]))
+                     alts! alts!! take! put! timeout go-loop]]))
 
 (defn- get-value [mem param mode]
   (case mode
@@ -25,22 +25,26 @@
 (defn- update-state [state & params]
   (apply assoc (cons state params)))
 
+;; ====== OPERATIONS ==========================================================
+
 (defn- op-ADD ([modes state] (op-ADD 3 modes state))
   ([n modes state]
    (let [[insts ip inp out] (destruc-state state)
-         raw-params         (subvec insts (inc ip) (+ ip 1 n))
-         [x y trg]          (map #(get-value insts %1 %2) raw-params modes)
+         x                  (get-value insts (insts (inc ip)) (nth modes 0))
+         y                  (get-value insts (insts (+ ip 2)) (nth modes 1))
+         trg                (insts (+ ip 3))
          result             (+ x y)]
-     (pprint trg)
+
      (update-state state
                    :insts (assoc insts trg result)
                    :ip    (+ ip n 1)))))
 
-(defn- op-MUL ([modes state] (op-ADD 3 modes state))
+(defn- op-MUL ([modes state] (op-MUL 3 modes state))
   ([n modes state]
    (let [[insts ip inp out] (destruc-state state)
-         raw-params         (subvec insts (inc ip) (+ ip 1 n))
-         [x y trg]          (map #(get-value insts %1 %2) raw-params modes)
+         x                  (get-value insts (insts (inc ip)) (nth modes 0))
+         y                  (get-value insts (insts (+ ip 2)) (nth modes 1))
+         trg                (insts (+ ip 3))
          result             (* x y)]
 
      (update-state state
@@ -50,35 +54,31 @@
 (defn- op-INP ([modes state] (op-INP 1 modes state))
   ([n modes state]
    (let [[insts ip inp out] (destruc-state state)
-         raw-params         (subvec insts (inc ip) (+ ip 1 n))
-         [trg]              (map #(get-value insts %1 %2) raw-params modes)
+         trg                (insts (inc ip))
          result             (<!! inp)]
 
      (update-state state
                    :insts (assoc insts trg result)
                    :ip    (+ ip n 1)))))
 
-(defn- op-OUT ([modes state] (op-INP 1 modes state))
+(defn- op-OUT ([modes state] (op-OUT 1 modes state))
   ([n modes state]
    (let [[insts ip inp out] (destruc-state state)
-         raw-params         (subvec insts (inc ip) (+ ip 1 n))
-         [src]              (map #(get-value insts %1 %2) raw-params modes)]
+         src                (get-value insts (insts (inc ip)) (nth modes 0))]
 
      (>!! out src)
      (update-state state
                    :ip (+ ip n 1)))))
 
+;; ============================================================================
+
 (defn- parse-inst [inst]
   (let [opcode (rem inst 100)
-        modes  (quot inst 100)]
-    (pprint [[inst] opcode
-             (bit-and modes 2r001)
-             (bit-and modes 2r010)
-             (bit-and modes 2r100)])
-    [opcode
-     (bit-and modes 2r001)
-     (bit-and modes 2r010)
-     (bit-and modes 2r100)]))
+        modes  (quot inst 100)
+        m1     (rem modes 10)
+        m2     (rem (quot modes 10) 10)
+        m3     (rem (quot modes 100) 10)]
+    [opcode m1 m2 m3]))
 
 (defn- get-op [opcode]
   (case opcode
@@ -121,10 +121,10 @@
 (defn execute [init vm]
   (let [[runner input output] vm]
     (go (>! input init))
-    (go (while true (pprint (<! output))))
+    (go-loop [x (<! output)]
+      (when x
+        (pprint x)
+        (recur (<! output))))
     (runner)))
 
 (execute 1 (Intcode instructions))
-
-(pprint (take 10 instructions))
-(pprint (count instructions))
