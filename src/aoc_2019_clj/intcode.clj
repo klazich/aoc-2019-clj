@@ -2,129 +2,133 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.pprint :refer [pprint]]
+            [clojure.math.combinatorics :as combo]
             [clojure.core.async
              :as a
              :refer [>! <! >!! <!! go chan buffer close! thread
-                     alts! alts!! take! put! timeout go-loop]]))
+                     alts! alts!! take! put! timeout go-loop]]
 
-(defn- get-value [mem param mode]
-  (case mode
-    0 (get mem param)
-    1 param))
+            [intcode.ops :refer [get-op]]))
 
 (defn- build-state
-  ([instructions input output pointer]
+  ([instructions pointer input output]
    {:insts instructions
+    :ip    pointer
     :inp   input
-    :out   output
-    :ip    pointer}))
+    :out   output}))
 
-(defn- destruc-state [state]
-  [(state :insts) (state :ip) (state :inp) (state :out)])
-
-(defn- update-state [state & params]
-  (apply assoc (cons state params)))
-
-;; ====== OPERATIONS ==========================================================
-
-(defn- op-ADD ([modes state] (op-ADD 3 modes state))
-  ([n modes state]
-   (let [[insts ip inp out] (destruc-state state)
-         x                  (get-value insts (insts (inc ip)) (nth modes 0))
-         y                  (get-value insts (insts (+ ip 2)) (nth modes 1))
-         trg                (insts (+ ip 3))
-         result             (+ x y)]
-
-     (update-state state
-                   :insts (assoc insts trg result)
-                   :ip    (+ ip n 1)))))
-
-(defn- op-MUL ([modes state] (op-MUL 3 modes state))
-  ([n modes state]
-   (let [[insts ip inp out] (destruc-state state)
-         x                  (get-value insts (insts (inc ip)) (nth modes 0))
-         y                  (get-value insts (insts (+ ip 2)) (nth modes 1))
-         trg                (insts (+ ip 3))
-         result             (* x y)]
-
-     (update-state state
-                   :insts (assoc insts trg result)
-                   :ip    (+ ip n 1)))))
-
-(defn- op-INP ([modes state] (op-INP 1 modes state))
-  ([n modes state]
-   (let [[insts ip inp out] (destruc-state state)
-         trg                (insts (inc ip))
-         result             (<!! inp)]
-
-     (update-state state
-                   :insts (assoc insts trg result)
-                   :ip    (+ ip n 1)))))
-
-(defn- op-OUT ([modes state] (op-OUT 1 modes state))
-  ([n modes state]
-   (let [[insts ip inp out] (destruc-state state)
-         src                (get-value insts (insts (inc ip)) (nth modes 0))]
-
-     (>!! out src)
-     (update-state state
-                   :ip (+ ip n 1)))))
-
-;; ============================================================================
-
-(defn- parse-inst [inst]
-  (let [opcode (rem inst 100)
+(defn- parse-inst [state]
+  (let [inst   ((state :insts) (state :ip))
+        opcode (mod inst 100)
         modes  (quot inst 100)
-        m1     (rem modes 10)
-        m2     (rem (quot modes 10) 10)
-        m3     (rem (quot modes 100) 10)]
-    [opcode m1 m2 m3]))
+        m1     (mod modes 10)
+        m2     (mod (quot modes 10) 10)
+        m3     (mod (quot modes 100) 10)]
+    [opcode (get-op opcode) m1 m2 m3]))
 
-(defn- get-op [opcode]
-  (case opcode
-    1 op-ADD
-    2 op-MUL
-    3 op-INP
-    4 op-OUT
-    ; 5 op-jnz
-    ; 6 op-jez
-    ; 7 op-lst
-    ; 8 op-equ
-    nil))
+(defn intcode [instructions]
+  (fn [init]
+    (let [input  (chan 1000)
+          output (chan 1000)]
+      (>!! input init)
+      (loop [state (build-state instructions 0 input output)]
+        (let [[opcode op-fn & modes] (parse-inst state)]
+          (if (= opcode 99)
+            (>!! output :done)
+            (recur (op-fn modes state)))))
+      [input output])))
 
-(defn- Intcode
-  ([instructions]
-   (let [input  (chan 1000)
-         output (chan 1000)]
-     [(fn []
-        (loop [state (build-state instructions input output 0)]
-          (let [inst             ((state :insts) (state :ip))
-                [opcode & modes] (parse-inst inst)
-                op-fn            (get-op opcode)]
-            (when-not (nil? op-fn)
-              (recur (op-fn modes state))))))
-      input
-      output])))
+(defn- chain [a b]
+  (go-loop [x (<! a)]
+    (when-not (= x :done)
+      (>! b x)
+      (recur (<! a)))))
 
-(def input (io/resource "day05/input.txt"))
+(defn intcode-series [vm-image]
+  (fn [xs init]
+    (let [input  (chan 1000)
+          output (reduce (fn [c x] (-> (vm-image x)
+                                       (as-> [i o] (do (chain c i) o))))
+                         input
+                         xs)]
+      (>!! input init)
+      [input output])))
+
+(defn vm-runner
+  ([input output init] (vm-runner input output init prn))
+  ([input output init out-fn]
+   (>!! input init)
+   (go-loop [x (<! output)]
+     (out-fn x)
+     (when-not (= x :done)
+       (recur (<! output))))))
+
+;; ====== RUNNING =============================================================
+
 
 (defn- read-input [input]
   (with-open [rdr (io/reader input)]
     (->> rdr
          slurp
-         (re-seq #"\d+")
+         (re-seq #"-?\d+")
          (map #(Integer/parseInt %))
          vec)))
 
-(def instructions (read-input input))
+(defn append-to-file
+  [filename s]
+  (spit filename s :append true))
 
-(defn execute [init vm]
-  (let [[runner input output] vm]
-    (go (>! input init))
+;; ====== DAY 05 ==============================================================
+
+(def input-5 (io/resource "day05/input.txt"))
+(def instructions-5 (read-input input-5))
+(def vm-image-5 (intcode instructions-5))
+
+(defn runner-5 [init]
+  (io/delete-file "./test.txt" 1)
+  (let [[input output] (vm-image-5 init)]
     (go-loop [x (<! output)]
-      (when x
-        (pprint x)
-        (recur (<! output))))
-    (runner)))
+      (if (= x :done)
+        (str "DONE " init)
+        (do (append-to-file "./test.txt" (str x " "))
+            (recur (<! output)))))))
 
-(execute 1 (Intcode instructions))
+(<!! (runner-5 1))
+
+;; ====== DAY 07 ==============================================================
+
+(def input-7 (io/resource "day07/input.txt"))
+(def instructions-7 (read-input input-7))
+(def vm-image-7 (intcode instructions-7))
+(def vm-series-image-7 (intcode-series vm-image-7))
+
+;; (let [[i o] (series-template [1 0 2 4 3])]
+;;   (>!! i 0)
+;;   (go (println (<! o)))
+;;   nil)
+
+
+(def amp-combos (combo/permutations (range 0 5)))
+
+;; (defn start-take [i o]
+;;   (put! i 0)
+;;   (go (<! o)))
+
+;; (let [log (chan 200)]
+;;   ;; (io/delete-file "./log-7.txt" 1)
+
+;;   ;; (go-loop [x (<! log)]
+;;   ;;   (prn x)
+;;   ;;   (when x
+;;   ;;     (append-to-file "./log-7.txt" (apply str x "\n"))
+;;   ;;     (recur (<! log))))
+
+;;   (doseq [xs amp-combos]
+;;     (let [[i o] (series-template xs)]
+;;       (prn xs (start-take i o)))))
+
+;; (doseq [xs amp-combos]
+;;   (let [[i o] (series-template xs)]
+
+;;     (prn xs (<!! (start-take i o)))))
+
