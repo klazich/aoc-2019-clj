@@ -1,134 +1,137 @@
 (ns intcode
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]
-            [clojure.pprint :refer [pprint]]
             [clojure.math.combinatorics :as combo]
-            [clojure.core.async
-             :as a
-             :refer [>! <! >!! <!! go chan buffer close! thread
-                     alts! alts!! take! put! timeout go-loop]]
+            [clojure.core.async :as a :refer [>! <! >!! <!! go go-loop]]
 
-            [intcode.ops :refer [get-op]]))
+            [intcode.vm :as vm]))
 
-(defn- build-state
-  ([instructions pointer input output]
-   {:insts instructions
-    :ip    pointer
-    :inp   input
-    :out   output}))
-
-(defn- parse-inst [state]
-  (let [inst   ((state :insts) (state :ip))
-        opcode (mod inst 100)
-        modes  (quot inst 100)
-        m1     (mod modes 10)
-        m2     (mod (quot modes 10) 10)
-        m3     (mod (quot modes 100) 10)]
-    [opcode (get-op opcode) m1 m2 m3]))
-
-(defn intcode [instructions]
-  (fn [init]
-    (let [input  (chan 1000)
-          output (chan 1000)]
-      (>!! input init)
-      (loop [state (build-state instructions 0 input output)]
-        (let [[opcode op-fn & modes] (parse-inst state)]
-          (if (= opcode 99)
-            (>!! output :done)
-            (recur (op-fn modes state)))))
-      [input output])))
-
-(defn- chain [a b]
-  (go-loop [x (<! a)]
-    (when-not (= x :done)
-      (>! b x)
-      (recur (<! a)))))
-
-(defn intcode-series [vm-image]
-  (fn [xs init]
-    (let [input  (chan 1000)
-          output (reduce (fn [c x] (-> (vm-image x)
-                                       (as-> [i o] (do (chain c i) o))))
-                         input
-                         xs)]
-      (>!! input init)
-      [input output])))
-
-(defn vm-runner
-  ([input output init] (vm-runner input output init prn))
-  ([input output init out-fn]
-   (>!! input init)
-   (go-loop [x (<! output)]
-     (out-fn x)
-     (when-not (= x :done)
-       (recur (<! output))))))
-
+;; ============================================================================
 ;; ====== RUNNING =============================================================
+;; ============================================================================
 
-
-(defn- read-input [input]
+(defn read-input [input]
   (with-open [rdr (io/reader input)]
     (->> rdr
          slurp
          (re-seq #"-?\d+")
-         (map #(Integer/parseInt %))
+         (map #(Long/parseLong %))
+         ((fn [v] (concat v (vec (repeat 1000000 0)))))
          vec)))
 
 (defn append-to-file
   [filename s]
   (spit filename s :append true))
 
+;; ============================================================================
 ;; ====== DAY 05 ==============================================================
+;; ============================================================================
 
 (def input-5 (io/resource "day05/input.txt"))
-(def instructions-5 (read-input input-5))
-(def vm-image-5 (intcode instructions-5))
+(def code-5 (read-input input-5))
+(def image-5 (vm/build-image code-5))
 
-(defn runner-5 [init]
-  (io/delete-file "./test.txt" 1)
-  (let [[input output] (vm-image-5 init)]
-    (go-loop [x (<! output)]
-      (if (= x :done)
-        (str "DONE " init)
-        (do (append-to-file "./test.txt" (str x " "))
-            (recur (<! output)))))))
+(defn handle-io-5 [[_ output]]
+  (go-loop [x    (<! output)
+            last nil]
+    (if (= x :done)
+      last
+      (do
+        ;; (prn x)
+        (recur (<! output) x)))))
 
-(<!! (runner-5 1))
+(defn run-5 [init]
+  (->> init
+       image-5
+       handle-io-5
+       <!!))
 
+(run-5 1)
+
+;; ============================================================================
 ;; ====== DAY 07 ==============================================================
+;; ============================================================================
 
 (def input-7 (io/resource "day07/input.txt"))
-(def instructions-7 (read-input input-7))
-(def vm-image-7 (intcode instructions-7))
-(def vm-series-image-7 (intcode-series vm-image-7))
+(def code-7 (read-input input-7))
+(def image-7 (vm/build-image code-7))
 
-;; (let [[i o] (series-template [1 0 2 4 3])]
-;;   (>!! i 0)
-;;   (go (println (<! o)))
-;;   nil)
+(defn handle-io-7-1 [[input output]]
+  (go (<! output)))
 
+(defn run-7-1 [xs init]
+  (->> init
+       ((vm/build-series-image image-7 xs))
+       handle-io-7-1
+       <!!))
 
-(def amp-combos (combo/permutations (range 0 5)))
+;; (def amp-combos-1 (combo/permutations (range 0 5)))
+;; (def max-7-1 (apply max (map #(run-7-1 % 0) amp-combos-1)))
 
-;; (defn start-take [i o]
-;;   (put! i 0)
-;;   (go (<! o)))
+(defn solve-7-1 []
+  (let [amps (combo/permutations (range 0 5))]
+    (apply max (map #(run-7-1 % 0) amps))))
 
-;; (let [log (chan 200)]
-;;   ;; (io/delete-file "./log-7.txt" 1)
+;; PART TWO
 
-;;   ;; (go-loop [x (<! log)]
-;;   ;;   (prn x)
-;;   ;;   (when x
-;;   ;;     (append-to-file "./log-7.txt" (apply str x "\n"))
-;;   ;;     (recur (<! log))))
+(defn handle-io-7-2 [[input output]]
+  (go-loop [x    (<! output)
+            last nil]
+    (if (= x :done)
+      last
+      (do (>! input x)
+          (recur (<! output) x)))))
 
-;;   (doseq [xs amp-combos]
-;;     (let [[i o] (series-template xs)]
-;;       (prn xs (start-take i o)))))
+(defn run-7-2 [xs init]
+  (->> init
+       ((vm/build-series-image image-7 xs))
+       handle-io-7-2
+       <!!))
 
-;; (doseq [xs amp-combos]
-;;   (let [[i o] (series-template xs)]
+;; (def amp-combos-2 (combo/permutations (range 5 10)))
+;; (def max-7-2 (apply max (map #(run-7-2 % 0) amp-combos-2)))
 
-;;     (prn xs (<!! (start-take i o)))))
+(defn solve-7-2 []
+  (let [amps (combo/permutations (range 5 10))]
+    (apply max (map #(run-7-2 % 0) amps))))
+
+;; ============================================================================
+;; ====== DAY 09 ==============================================================
+;; ============================================================================
+
+(def input-9 (io/resource "day09/input.txt"))
+(def code-9 (read-input input-9))
+(def image-9 (vm/build-image code-9))
+
+(defn handle-io-9 [[_ output]]
+  (io/delete-file "./log.txt" 1)
+  (go-loop [x    (<! output)
+            last nil]
+    (if (= x :done)
+      last
+      (do
+        ;; (prn x)
+        (recur (<! output) x)))))
+
+(defn run-9 [init]
+  (->> init
+       image-9
+       handle-io-9
+       <!!))
+
+;; ============================================================================
+;; ====== ASSERT ==============================================================
+;; ============================================================================
+
+(def test-intcode (every-pred (assert (= (run-5 1) 6745903) "DAY 5")
+                              (assert (= (solve-7-1) 92663) "DAY 7-1")
+                              (assert (= (solve-7-2) 14365052) "DAY 7-2")
+                              (assert (= (run-9 1) 2789104029) "DAY 9-1")
+                              ;; (assert (= (run-9 2) 32869) "DAY 9-2")
+                              ))
+
+(test-intcode)
+
+;; ============================================================================
+;; ====== DAY 11 ==============================================================
+;; ============================================================================
 

@@ -6,94 +6,144 @@
 
 (defn- get-arg [param mode state]
   (case mode
-    0 (get (state :insts) param)
-    1 param))
+    0 (get (state :code) param)
+    1 param
+    2 (get (state :code) (+ (state :rb) param))))
 
-(defn- get-args [n modes state]
-  (let [insts-sub (->> (state :insts)
-                       (drop (inc (state :ip)))
-                       (take n))
-        modes-sub (take n modes)]
-    (map #(get-arg %1 %2 state) insts-sub modes-sub)))
+(defn- get-adr [param mode state]
+  (case mode
+    0 param
+    2 (+ (state :rb) param)))
 
+(defn- get-params [n state]
+  (->> (state :code)
+       (drop (inc (state :ip)))
+       (take n)))
 
 ;; ====== OPERATIONS ==========================================================
 
-
 (defn- op-add
-  [modes state]
-  (let [args   (get-args 2 modes state)
-        adr    ((state :insts) (+ (state :ip) 3))
-        result (reduce + args)]
+  [modes state log]
+  (let [[m1 m2 m3] modes
+        [p1 p2 p3] (get-params 3 state)
+        x          (get-arg p1 m1 state)
+        y          (get-arg p2 m2 state)
+        adr        (get-adr p3 m3 state)
+        result     (+ x y)]
+
+    (when log (prn "ADD" [p1 p2 [p3]] [m1 m2 [m3]] [x y] result adr))
 
     (update-state state
-                  :insts (assoc (state :insts) adr result)
+                  :code (assoc (state :code) adr result)
                   :ip (+ (state :ip) 4))))
 
 (defn- op-mul
-  [modes state]
-  (let [args   (get-args 2 modes state)
-        adr    ((state :insts) (+ (state :ip) 3))
-        result (reduce * args)]
+  [modes state log]
+  (let [[m1 m2 m3] modes
+        [p1 p2 p3] (get-params 3 state)
+        x          (get-arg p1 m1 state)
+        y          (get-arg p2 m2 state)
+        adr        (get-adr p3 m3 state)
+        result     (* x y)]
+
+    (when log (prn "MUL" [p1 p2 [p3]] [m1 m2 [m3]] [x y] result adr))
 
     (update-state state
-                  :insts (assoc (state :insts) adr result)
+                  :code (assoc (state :code) adr result)
                   :ip (+ (state :ip) 4))))
 
 (defn- op-inp
-  [modes state]
-  (let [input  (state :inp)
-        adr    ((state :insts) (inc (state :ip)))
-        result (<!! input)]
+  [modes state log]
+  (let [m1     (first modes)
+        p1     ((state :code) (inc (state :ip)))
+        adr    (get-adr p1 m1 state)
+        result (<!! (state :inp))]
+
+    (when log (prn "INP" [[p1]] [[m1]] [] result adr))
 
     (update-state state
-                  :insts (assoc (state :insts) adr result)
+                  :code (assoc (state :code) adr result)
                   :ip (+ (state :ip) 2))))
 
 (defn- op-out
-  [modes state]
-  (let [output (state :out)
-        [arg]  (get-args 1 modes state)]
+  [modes state log]
+  (let [m1 (first modes)
+        p1 ((state :code) (inc (state :ip)))
+        x  (get-arg p1 m1 state)]
 
-    (>!! output arg)
+    (when log (prn "OUT" [p1] [m1] [x] x :out))
+
+    (>!! (state :out) x)
     (update-state state
                   :ip (+ (state :ip) 2))))
 
 (defn- op-jnz
-  [modes state]
-  (let [[arg trg] (get-args 2 modes state)
-        pred      (not (zero? arg))]
+  [modes state log]
+  (let [[m1 m2] modes
+        [p1 p2] (get-params 2 state)
+        x       (get-arg p1 m1 state)
+        n       (get-arg p2 m2 state)
+        pred    (not (zero? x))]
+
+    (when log (prn "JNZ" [p1 p2] [m1 m2] [x n] pred :ip))
 
     (update-state state
-                  :ip (if pred trg (+ (state :ip) 3)))))
+                  :ip (if pred n (+ (state :ip) 3)))))
 
 (defn- op-jez
-  [modes state]
-  (let [[arg trg] (get-args 2 modes state)
-        pred      (zero? arg)]
+  [modes state log]
+  (let [[m1 m2] modes
+        [p1 p2] (get-params 2 state)
+        x       (get-arg p1 m1 state)
+        n       (get-arg p2 m2 state)
+        pred    (zero? x)]
+
+    (when log (prn "JEZ" [p1 p2] [m1 m2] [x n] pred :ip))
 
     (update-state state
-                  :ip (if pred trg (+ (state :ip) 3)))))
+                  :ip (if pred n (+ (state :ip) 3)))))
 
 (defn- op-lst
-  [modes state]
-  (let [args (get-args 2 modes state)
-        adr  ((state :insts) (+ (state :ip) 3))
-        pred (apply < args)]
+  [modes state log]
+  (let [[m1 m2 m3] modes
+        [p1 p2 p3] (get-params 3 state)
+        x          (get-arg p1 m1 state)
+        y          (get-arg p2 m2 state)
+        adr        (get-adr p3 m3 state)
+        pred       (< x y)]
+
+    (when log (prn "LST" [p1 p2 [p3]] [m1 m2 [m3]] [x y] pred adr))
 
     (update-state state
-                  :insts (assoc (state :insts) adr (if pred 1 0))
+                  :code (assoc (state :code) adr (if pred 1 0))
                   :ip (+ (state :ip) 4))))
 
 (defn- op-equ
-  [modes state]
-  (let [args (get-args 2 modes state)
-        adr  ((state :insts) (+ (state :ip) 3))
-        pred (apply = args)]
+  [modes state log]
+  (let [[m1 m2 m3] modes
+        [p1 p2 p3] (get-params 3 state)
+        x          (get-arg p1 m1 state)
+        y          (get-arg p2 m2 state)
+        adr        (get-adr p3 m3 state)
+        pred       (= x y)]
+
+    (when log (prn "EQU" [p1 p2 [p3]] [m1 m2 [m3]] [x y] pred adr))
 
     (update-state state
-                  :insts (assoc (state :insts) adr (if pred 1 0))
+                  :code (assoc (state :code) adr (if pred 1 0))
                   :ip (+ (state :ip) 4))))
+
+(defn- op-rbo
+  [modes state log]
+  (let [m1 (first modes)
+        p1 ((state :code) (inc (state :ip)))
+        n  (get-arg p1 m1 state)]
+
+    (when log (prn "RBO" [p1] [m1] [n] (+ (state :rb) n) :rb))
+
+    (update-state state
+                  :ip (+ (state :ip) 2)
+                  :rb (+ (state :rb) n))))
 
 (defn get-op [opcode]
   (case opcode
@@ -105,4 +155,5 @@
     6 op-jez
     7 op-lst
     8 op-equ
+    9 op-rbo
     nil))
